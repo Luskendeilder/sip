@@ -334,33 +334,64 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 }
 
 // MoveSIPParticipantNotFoundError is returned when no active call matches
-// the given SIP call ID. Distinguished from generic errors so the HTTP
-// handler can map to 404. Tilbyderen fork extension.
-var MoveSIPParticipantNotFoundError = errors.New("no active SIP call with that call ID")
+// the given SIP call ID or participant identity. Distinguished from
+// generic errors so the HTTP handler can map to 404. Tilbyderen fork.
+var MoveSIPParticipantNotFoundError = errors.New("no active SIP call with that call ID or participant identity")
+
+// MoveSIPParticipantQuery selects the call to move. Either:
+//   - SipCallId (the LK-SIP internal SCL_ id, == LocalTag), OR
+//   - ParticipantIdentity (e.g. "sip-{ourCallId}", set by the caller of
+//     CreateSIPParticipant).
+// At least one must be set. SipCallId is faster (O(1) map lookup);
+// ParticipantIdentity is O(n) across both registries but lets callers
+// avoid having to persist the auto-generated SCL_ id.
+type MoveSIPParticipantQuery struct {
+	SipCallId           string
+	ParticipantIdentity string
+}
 
 // MoveSIPParticipant relocates an active SIP call into a different
 // LiveKit room while keeping the carrier-side SIP/RTP session alive.
 // Looks up the call across both outbound (Client.activeCalls) and
 // inbound (Server.byLocalTag) registries and delegates to that worker's
 // SwapRoom. Tilbyderen fork extension; see docs/MOVE-SIP-PARTICIPANT.md.
-func (s *Service) MoveSIPParticipant(ctx context.Context, sipCallID, destinationRoom, destinationToken string) error {
+func (s *Service) MoveSIPParticipant(ctx context.Context, q MoveSIPParticipantQuery, destinationRoom, destinationToken string) error {
 	ctx, span := Tracer.Start(ctx, "sip.Service.MoveSIPParticipant")
 	defer span.End()
 
-	tag := LocalTag(sipCallID)
-
-	if call := s.cli.GetActiveCall(tag); call != nil {
-		s.log.Infow("moving outbound SIP participant",
-			"sipCallId", sipCallID, "destinationRoom", destinationRoom,
-		)
-		return call.SwapRoom(ctx, destinationRoom, destinationToken)
+	// O(1) lookup if caller knows the SCL_ id.
+	if q.SipCallId != "" {
+		tag := LocalTag(q.SipCallId)
+		if call := s.cli.GetActiveCall(tag); call != nil {
+			s.log.Infow("moving outbound SIP participant (by sipCallId)",
+				"sipCallId", q.SipCallId, "destinationRoom", destinationRoom,
+			)
+			return call.SwapRoom(ctx, destinationRoom, destinationToken)
+		}
+		if call := s.srv.GetInboundCall(tag); call != nil {
+			s.log.Infow("moving inbound SIP participant (by sipCallId)",
+				"sipCallId", q.SipCallId, "destinationRoom", destinationRoom,
+			)
+			return call.SwapRoom(ctx, destinationRoom, destinationToken)
+		}
 	}
 
-	if call := s.srv.GetInboundCall(tag); call != nil {
-		s.log.Infow("moving inbound SIP participant",
-			"sipCallId", sipCallID, "destinationRoom", destinationRoom,
-		)
-		return call.SwapRoom(ctx, destinationRoom, destinationToken)
+	// O(n) fallback: iterate both registries to find a participant with
+	// matching identity. Cheap at our scale (low hundreds of concurrent
+	// calls); callers that care about latency should provide SipCallId.
+	if q.ParticipantIdentity != "" {
+		if call := s.cli.FindCallByIdentity(q.ParticipantIdentity); call != nil {
+			s.log.Infow("moving outbound SIP participant (by identity)",
+				"identity", q.ParticipantIdentity, "destinationRoom", destinationRoom,
+			)
+			return call.SwapRoom(ctx, destinationRoom, destinationToken)
+		}
+		if call := s.srv.FindInboundCallByIdentity(q.ParticipantIdentity); call != nil {
+			s.log.Infow("moving inbound SIP participant (by identity)",
+				"identity", q.ParticipantIdentity, "destinationRoom", destinationRoom,
+			)
+			return call.SwapRoom(ctx, destinationRoom, destinationToken)
+		}
 	}
 
 	return MoveSIPParticipantNotFoundError

@@ -388,3 +388,21 @@ func (s *Server) GetInboundCall(tag LocalTag) *inboundCall {
 	defer s.cmu.RUnlock()
 	return s.byLocalTag[tag]
 }
+
+// FindInboundCallByIdentity returns the first inbound call whose
+// participant identity matches. O(n); see Client.FindCallByIdentity.
+// Tilbyderen fork extension.
+func (s *Server) FindInboundCallByIdentity(identity string) *inboundCall {
+	s.cmu.RLock()
+	defer s.cmu.RUnlock()
+	for _, call := range s.byLocalTag {
+		if r := call.lkRoom; r != nil {
+			if lkRoom := r.Room(); lkRoom != nil {
+				if lkRoom.LocalParticipant.Identity() == identity {
+					return call
+				}
+			}
+		}
+	}
+	return nil
+}

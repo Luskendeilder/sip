@@ -47,7 +47,7 @@ type sipServiceActiveCallsFunc func() sip.ActiveCalls
 // sipMoveSIPParticipantFunc is the Tilbyderen fork hook for the
 // MoveSIPParticipant HTTP endpoint. Returns the SIP layer's lookup +
 // SwapRoom orchestration. Wired from main.go to sip.Service.MoveSIPParticipant.
-type sipMoveSIPParticipantFunc func(ctx context.Context, sipCallID, destinationRoom, destinationToken string) error
+type sipMoveSIPParticipantFunc func(ctx context.Context, q sip.MoveSIPParticipantQuery, destinationRoom, destinationToken string) error
 
 type Service struct {
 	conf *config.Config

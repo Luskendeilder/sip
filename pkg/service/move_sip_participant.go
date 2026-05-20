@@ -22,17 +22,22 @@ import (
 
 // MoveSIPParticipantRequest is the JSON body for the move endpoint.
 //
-// SipCallId identifies the existing SIP call to move — same value that
-// CreateSIPParticipant returned and that the caller has been tracking
-// alongside their internal Call.id.
+// Exactly one of SipCallId or ParticipantIdentity must be set:
+//   - SipCallId          : LiveKit-SIP's internal SCL_ id (==LocalTag).
+//                          O(1) lookup, but caller must have persisted
+//                          the auto-generated value.
+//   - ParticipantIdentity : the identity passed to CreateSIPParticipant
+//                          (e.g. "sip-{ourCallId}"). O(n) lookup but no
+//                          persistence required.
 //
 // DestinationRoom + DestinationToken describe the room to swap into.
 // Caller mints the token with the SIP participant identity and the
 // destination room granted. We do no token issuance here.
 type MoveSIPParticipantRequest struct {
-	SipCallId        string `json:"sip_call_id"`
-	DestinationRoom  string `json:"destination_room"`
-	DestinationToken string `json:"destination_token"`
+	SipCallId           string `json:"sip_call_id,omitempty"`
+	ParticipantIdentity string `json:"participant_identity,omitempty"`
+	DestinationRoom     string `json:"destination_room"`
+	DestinationToken    string `json:"destination_token"`
 }
 
 // MoveSIPParticipantResponse is currently empty; we may add stats later.
@@ -49,8 +54,12 @@ func (s *Service) handleMoveSIPParticipant(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.SipCallId == "" || req.DestinationRoom == "" || req.DestinationToken == "" {
-		http.Error(w, "sip_call_id, destination_room, destination_token all required", http.StatusBadRequest)
+	if req.SipCallId == "" && req.ParticipantIdentity == "" {
+		http.Error(w, "exactly one of sip_call_id or participant_identity is required", http.StatusBadRequest)
+		return
+	}
+	if req.DestinationRoom == "" || req.DestinationToken == "" {
+		http.Error(w, "destination_room and destination_token are required", http.StatusBadRequest)
 		return
 	}
 
@@ -64,7 +73,10 @@ func (s *Service) handleMoveSIPParticipant(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), moveSIPRequestTimeout)
 	defer cancel()
 
-	err := s.sipMoveSIPParticipant(ctx, req.SipCallId, req.DestinationRoom, req.DestinationToken)
+	err := s.sipMoveSIPParticipant(ctx, sip.MoveSIPParticipantQuery{
+		SipCallId:           req.SipCallId,
+		ParticipantIdentity: req.ParticipantIdentity,
+	}, req.DestinationRoom, req.DestinationToken)
 	switch {
 	case err == nil:
 		w.Header().Set("Content-Type", "application/json")

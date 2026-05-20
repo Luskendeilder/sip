@@ -183,6 +183,24 @@ func (c *Client) GetActiveCall(tag LocalTag) *outboundCall {
 	return c.getActiveCall(tag)
 }
 
+// FindCallByIdentity returns the first outbound call whose published
+// participant identity matches. O(n); callers that have the SCL_ id
+// should prefer GetActiveCall. Tilbyderen fork extension.
+func (c *Client) FindCallByIdentity(identity string) *outboundCall {
+	c.cmu.Lock()
+	defer c.cmu.Unlock()
+	for _, call := range c.activeCalls {
+		if r := call.lkRoom; r != nil {
+			if lkRoom := r.Room(); lkRoom != nil {
+				if lkRoom.LocalParticipant.Identity() == identity {
+					return call
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
 	if c.mon.Health() != stats.HealthOK {
 		return nil, siperrors.ErrUnavailable
