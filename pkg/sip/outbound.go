@@ -570,6 +570,32 @@ func (c *outboundCall) SwapRoom(ctx context.Context, destinationRoom, destinatio
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "no live lksdk.Room")
 	}
 	lp := oldLK.LocalParticipant
+
+	// Carry the prior participant SID forward as an attribute on the new
+	// participant. Cloud's MoveParticipant preserves participant SID
+	// natively; OSS can't because the SFU treats the re-join as a fresh
+	// participant. Consumers that key off SID can use this attribute to
+	// stitch continuity across the move. The attribute also forms a
+	// linked list across multiple swaps via sip.move_count.
+	priorSid := lp.SID()
+	priorMoveCount := 0
+	if existing := lp.Attributes(); existing != nil {
+		if v, ok := existing[AttrSIPMoveCount]; ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				priorMoveCount = n
+			}
+		}
+	}
+	// Clone the attributes map — Attributes() may share its backing map
+	// with the SDK, and we're about to mutate it. Cheap (small map) and
+	// matches the maps.Clone() pattern used in createSIPParticipant.
+	attrs := maps.Clone(lp.Attributes())
+	if attrs == nil {
+		attrs = make(map[string]string)
+	}
+	attrs[AttrSIPPriorParticipantSID] = priorSid
+	attrs[AttrSIPMoveCount] = strconv.Itoa(priorMoveCount + 1)
+
 	rconf := RoomConfig{
 		WsUrl:            c.c.conf.WsUrl,
 		Token:            destinationToken,
@@ -580,7 +606,7 @@ func (c *outboundCall) SwapRoom(ctx context.Context, destinationRoom, destinatio
 			Identity:   lp.Identity(),
 			Name:       lp.Name(),
 			Metadata:   lp.Metadata(),
-			Attributes: lp.Attributes(),
+			Attributes: attrs,
 		},
 	}
 
@@ -588,6 +614,8 @@ func (c *outboundCall) SwapRoom(ctx context.Context, destinationRoom, destinatio
 		"from_room", oldLK.Name(),
 		"to_room", destinationRoom,
 		"identity", lp.Identity(),
+		"prior_sid", priorSid,
+		"move_count", priorMoveCount+1,
 	)
 
 	// Detach the SIP→LK pump. audioIn.Swap closes the old writer (which

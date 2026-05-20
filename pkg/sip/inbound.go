@@ -32,6 +32,7 @@ import (
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pkg/errors"
+	"golang.org/x/exp/maps"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
@@ -1476,6 +1477,25 @@ func (c *inboundCall) SwapRoom(ctx context.Context, destinationRoom, destination
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "no live lksdk.Room")
 	}
 	lp := oldLK.LocalParticipant
+
+	// Carry the prior participant SID + move-count forward (see
+	// outboundCall.SwapRoom for the rationale).
+	priorSid := lp.SID()
+	priorMoveCount := 0
+	if existing := lp.Attributes(); existing != nil {
+		if v, ok := existing[AttrSIPMoveCount]; ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				priorMoveCount = n
+			}
+		}
+	}
+	attrs := maps.Clone(lp.Attributes())
+	if attrs == nil {
+		attrs = make(map[string]string)
+	}
+	attrs[AttrSIPPriorParticipantSID] = priorSid
+	attrs[AttrSIPMoveCount] = strconv.Itoa(priorMoveCount + 1)
+
 	rconf := RoomConfig{
 		WsUrl:            c.s.conf.WsUrl,
 		Token:            destinationToken,
@@ -1486,7 +1506,7 @@ func (c *inboundCall) SwapRoom(ctx context.Context, destinationRoom, destination
 			Identity:   lp.Identity(),
 			Name:       lp.Name(),
 			Metadata:   lp.Metadata(),
-			Attributes: lp.Attributes(),
+			Attributes: attrs,
 		},
 	}
 
@@ -1494,6 +1514,8 @@ func (c *inboundCall) SwapRoom(ctx context.Context, destinationRoom, destination
 		"from_room", oldLK.Name(),
 		"to_room", destinationRoom,
 		"identity", lp.Identity(),
+		"prior_sid", priorSid,
+		"move_count", priorMoveCount+1,
 	)
 
 	// Detach the SIP→LK pump (closes the old track writer).

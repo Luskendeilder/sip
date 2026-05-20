@@ -58,6 +58,16 @@ const (
 const (
 	AttrSIPCallIDFull = livekit.AttrSIPPrefix + "callIDFull"
 	AttrSIPCallTag    = livekit.AttrSIPPrefix + "callTag"
+	// AttrSIPPriorParticipantSID is set on a SIP participant after the
+	// admin MoveSIPParticipant endpoint (Tilbyderen fork) has relocated
+	// it to a new room. The value is the participant SID it had in the
+	// previous room. Consumers that key off SID can use this attribute
+	// to follow continuity across a move.
+	AttrSIPPriorParticipantSID = livekit.AttrSIPPrefix + "priorParticipantSid"
+	// AttrSIPMoveCount tracks how many times this SIP participant has
+	// been moved (zero before the first move). Decimal string. Useful
+	// for debugging and for consumers that want to detect repeated moves.
+	AttrSIPMoveCount = livekit.AttrSIPPrefix + "moveCount"
 )
 
 var headerToLog = map[string]string{

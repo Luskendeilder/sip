@@ -194,3 +194,33 @@ Then restore the original MoveParticipant-based transfer flows in
 **Audio gap.** Disconnect → new room join is the bound on the audio gap. lksdk does a fresh WebSocket signal connect + WebRTC PeerConnection negotiation. Observed elsewhere as ~100-300ms; carrier hears silence in both directions during that window. SIP carrier never sees a BYE — its leg is preserved end-to-end.
 
 **Why a `started` precondition.** Both `SwapRoom` impls reject calls where `started` isn't broken — i.e. before the SIP call is established. Moving a half-connected call would leak resources because the connect path isn't idempotent against the partial state.
+
+## Differences from Cloud's MoveParticipant (not fixable in this fork)
+
+Cloud's MoveParticipant lives in the SFU's RoomManager. It preserves
+both the participant SID and the published track SIDs across the move,
+because the SFU just rewires participant context server-side. Our
+implementation can't do that — `lksdk.NewRoom + JoinWithContextAndToken`
+is fundamentally a fresh participant from the SFU's perspective. Two
+concrete consequences:
+
+1. **New participant SID** in the destination room. Mitigation in this
+   fork: we carry the prior SID forward as the `sip.priorParticipantSid`
+   attribute on the new participant (and bump a `sip.moveCount` integer).
+   Consumers that key off SID can use these to follow continuity. See
+   `pkg/sip/participant.go` for the constants.
+
+2. **Audio gap dominated by listener-side resubscribe**. The local audio
+   track gets a fresh SID in the destination room, so every listener
+   there has to fire `OnTrackPublished` → `SetSubscribed(true)` → WebRTC
+   negotiate. The lksdk reconnect (~100ms) is the smaller half of the
+   typical 100-300ms gap; the larger half is the destination-side
+   subscription handshake which is intrinsic to the new SID. Cloud
+   avoids this because the track SID is preserved end-to-end and
+   listeners' existing subscriptions just keep working.
+
+The only complete fix for both is to also fork `livekit/livekit` and
+implement `MoveParticipant` in `pkg/service/roommanager.go` so the SFU
+actually performs a server-side context shift instead of accepting a
+fresh `Join`. That's ~1-2 weeks of SFU engineering; deferred until or
+unless a load-bearing product reason emerges.
