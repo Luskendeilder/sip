@@ -1521,10 +1521,12 @@ func (c *inboundCall) SwapRoom(ctx context.Context, destinationRoom, destination
 	// Detach the SIP→LK pump (closes the old track writer).
 	c.media.WriteAudioTo(nil)
 
-	// Detach the LK→SIP path (mixer → carrier).
-	if w := c.lkRoom.SwapOutput(nil); w != nil {
-		_ = w.Close()
-	}
+	// Detach the LK→SIP path. Do NOT close the returned wrapper — it's
+	// a ResampleWriter wrapping c.media.GetAudioWriter() (audioOut
+	// SwitchWriter). Closing the wrapper cascades into closing audioOut,
+	// killing the encoder pipeline we'll reuse for the new room. See
+	// outbound.go SwapRoom for full notes.
+	_ = c.lkRoom.SwapOutput(nil)
 	c.lkRoom.SetDTMFOutput(nil)
 
 	if err := c.lkRoom.SwapToRoom(ctx, c.s.conf, rconf); err != nil {

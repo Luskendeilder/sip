@@ -624,13 +624,14 @@ func (c *outboundCall) SwapRoom(ctx context.Context, destinationRoom, destinatio
 	// until we re-attach below.
 	c.media.WriteAudioTo(nil)
 
-	// Detach the LK→SIP path. The SwapOutput'd writer was a resampler
-	// wrapping c.media.GetAudioWriter(); the underlying audioOut is the
-	// same instance we'll reuse on the new mixer below, so we just close
-	// the resampler wrapper.
-	if w := c.lkRoom.SwapOutput(nil); w != nil {
-		_ = w.Close()
-	}
+	// Detach the LK→SIP path. The SwapOutput'd writer is a ResampleWriter
+	// wrapping c.media.GetAudioWriter() — and ResampleWriter.Close()
+	// cascades to closing the underlying audioOut SwitchWriter, which
+	// would kill the encoder pipeline we need to reuse for the new room.
+	// So just discard the returned wrapper without closing it; the GC
+	// reclaims it once mixer writes stop arriving (which happens
+	// implicitly when r.out.Swap(nil) cuts the chain on the LK side).
+	_ = c.lkRoom.SwapOutput(nil)
 	c.lkRoom.SetDTMFOutput(nil)
 
 	// Old c.lkRoomIn is closed by media.WriteAudioTo(nil) above; drop
