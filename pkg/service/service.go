@@ -122,6 +122,9 @@ func NewService(
 			w.WriteHeader(code)
 			_, _ = w.Write([]byte(st.String()))
 		})
+
+		// Tilbyderen fork extension. See docs/MOVE-SIP-PARTICIPANT.md.
+		mux.HandleFunc("/admin/move-sip-participant", s.handleMoveSIPParticipant)
 	}
 	return s
 }
