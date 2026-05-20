@@ -44,6 +44,11 @@ import (
 type sipServiceStopFunc func()
 type sipServiceActiveCallsFunc func() sip.ActiveCalls
 
+// sipMoveSIPParticipantFunc is the Tilbyderen fork hook for the
+// MoveSIPParticipant HTTP endpoint. Returns the SIP layer's lookup +
+// SwapRoom orchestration. Wired from main.go to sip.Service.MoveSIPParticipant.
+type sipMoveSIPParticipantFunc func(ctx context.Context, sipCallID, destinationRoom, destinationToken string) error
+
 type Service struct {
 	conf *config.Config
 	log  logger.Logger
@@ -59,6 +64,7 @@ type Service struct {
 
 	sipServiceStop        sipServiceStopFunc
 	sipServiceActiveCalls sipServiceActiveCallsFunc
+	sipMoveSIPParticipant sipMoveSIPParticipantFunc
 
 	mon      *stats.Monitor
 	shutdown core.Fuse
@@ -67,7 +73,8 @@ type Service struct {
 
 func NewService(
 	conf *config.Config, log logger.Logger, srv rpc.SIPInternalServerImpl, sipServiceStop sipServiceStopFunc,
-	sipServiceActiveCalls sipServiceActiveCallsFunc, cli rpc.IOInfoClient, bus psrpc.MessageBus, mon *stats.Monitor,
+	sipServiceActiveCalls sipServiceActiveCallsFunc, sipMoveSIPParticipant sipMoveSIPParticipantFunc,
+	cli rpc.IOInfoClient, bus psrpc.MessageBus, mon *stats.Monitor,
 ) *Service {
 	s := &Service{
 		conf: conf,
@@ -79,6 +86,7 @@ func NewService(
 
 		sipServiceStop:        sipServiceStop,
 		sipServiceActiveCalls: sipServiceActiveCalls,
+		sipMoveSIPParticipant: sipMoveSIPParticipant,
 
 		mon: mon,
 	}

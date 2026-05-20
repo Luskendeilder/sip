@@ -175,6 +175,14 @@ func (c *Client) getActiveCall(tag LocalTag) *outboundCall {
 	return c.activeCalls[tag]
 }
 
+// GetActiveCall returns the outbound call worker for a given local tag
+// (== LiveKit SIP call ID). Returns nil if no such call. Used by the
+// MoveSIPParticipant admin endpoint to locate the worker before
+// orchestrating a room swap. Tilbyderen fork extension.
+func (c *Client) GetActiveCall(tag LocalTag) *outboundCall {
+	return c.getActiveCall(tag)
+}
+
 func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
 	if c.mon.Health() != stats.HealthOK {
 		return nil, siperrors.ErrUnavailable

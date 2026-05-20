@@ -171,11 +171,26 @@ Then restore the original MoveParticipant-based transfer flows in
 - [x] Repo forked: `Luskendeilder/sip`
 - [x] Local clone: `c:/Users/filip/Documents/Cursor prosjekter/livekit-sip-fork`
 - [x] Feature branch: `feature/move-sip-participant`
-- [ ] Stub HTTP endpoint added (next)
-- [ ] `outboundCall.SwapRoom`
-- [ ] `inboundCall.SwapRoom`
-- [ ] `Room.SwapToRoom` (the SFU-side disconnect/reconnect dance — biggest piece)
+- [x] `Room.SwapToRoom` (room.go) — disconnect old lksdk.Room, reconnect via existing Connect, suppressing the stopped fuse via a `swapping` atomic flag
+- [x] `outboundCall.SwapRoom` (outbound.go) — orchestrates audio detach + Room swap + re-publish + connectMedia + Subscribe
+- [x] `inboundCall.SwapRoom` (inbound.go) — mirror, uses simpler media wiring (media owns audioIn, no struct-cached writer)
+- [x] `Client.GetActiveCall` + `Server.GetInboundCall` — public lookup by SIP call ID
+- [x] `sip.Service.MoveSIPParticipant` — orchestrator that finds the call in either registry and delegates
+- [x] HTTP handler at `POST /admin/move-sip-participant` wired to the orchestrator
+- [x] Function pointer plumbing through `service.Service` from `main.go`
 - [ ] Tests
-- [ ] Docker image built + pushed
+- [ ] Docker image built + pushed to GHCR
 - [ ] Integrated in `apps/server/src/services/telephony/livekit/sip.ts`
-- [ ] Old MoveParticipant-based transfer flows restored
+- [ ] Old MoveParticipant-based transfer flows restored in our Node code
+
+## Design notes captured during implementation
+
+**SDK already supports being moved.** [lksdk-go's room.go:1290](https://github.com/livekit/server-sdk-go/blob/main/room.go#L1290) has `OnRoomMoved` that handles a `RoomMovedResponse` signal — this is how Cloud's SFU triggers the move. We can't trigger that signal from the OSS server side (the SFU's MoveParticipant returns "not implemented"), so we explicitly `Disconnect + JoinWithContextAndToken` from the gateway side. Net effect from the SFU's POV is the same: participant leaves room A, joins room B.
+
+**What survives the swap, what doesn't.** Survives: the `Room` Go struct, its `mix` (mixer), its `out` (SwitchWriter feeding the carrier's RTP encoder), the SIP carrier UDP socket, the call worker's mutex + state. Doesn't survive: the `lksdk.Room` itself (a new one is built), the local audio track (must be re-published via `NewParticipantTrack`), the subscribed-track decoder goroutines (rebuild on `Subscribe()` in the new room), the `ready`/`subscribed` fuses (reset to fresh `core.Fuse{}`).
+
+**Why we suppress only the OUT going disconnect.** The `swapping` flag on Room is checked inside `OnDisconnectedWithReason`. It's set BEFORE we `DisconnectWithReason()` the outgoing lksdk.Room and cleared by `defer` in `SwapToRoom`. The new lksdk.Room's callback (created fresh in Connect) captures `r` and reads `r.swapping` at fire time; since the flag is back to false by then, normal disconnect handling resumes.
+
+**Audio gap.** Disconnect → new room join is the bound on the audio gap. lksdk does a fresh WebSocket signal connect + WebRTC PeerConnection negotiation. Observed elsewhere as ~100-300ms; carrier hears silence in both directions during that window. SIP carrier never sees a BYE — its leg is preserved end-to-end.
+
+**Why a `started` precondition.** Both `SwapRoom` impls reject calls where `started` isn't broken — i.e. before the SIP call is established. Moving a half-connected call would leak resources because the connect path isn't idempotent against the partial state.

@@ -7,23 +7,24 @@
 // This sidesteps the missing MoveParticipant API in LiveKit OSS server
 // (returns "not implemented" — Cloud-only). See docs/MOVE-SIP-PARTICIPANT.md
 // in this repo for the full design.
-//
-// This file contains the HTTP plumbing only. The actual room-swap logic
-// lives in pkg/sip/room.go (Room.SwapToRoom) and is invoked via the call
-// worker registries in client.go (outbound) and server.go (inbound).
 
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"time"
+
+	"github.com/livekit/sip/pkg/sip"
 )
 
 // MoveSIPParticipantRequest is the JSON body for the move endpoint.
 //
 // SipCallId identifies the existing SIP call to move — same value that
 // CreateSIPParticipant returned and that the caller has been tracking
-// alongside our internal Call.id.
+// alongside their internal Call.id.
 //
 // DestinationRoom + DestinationToken describe the room to swap into.
 // Caller mints the token with the SIP participant identity and the
@@ -53,23 +54,38 @@ func (s *Service) handleMoveSIPParticipant(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// TODO(fork): wire to call worker registries. See docs/MOVE-SIP-PARTICIPANT.md.
-	//
-	// Pseudocode:
-	//   if call := s.client.GetActiveCall(LocalTag(req.SipCallId)); call != nil {
-	//       err := call.SwapRoom(r.Context(), req.DestinationRoom, req.DestinationToken)
-	//       writeMoveResult(w, err)
-	//       return
-	//   }
-	//   if call := s.server.GetInboundCallByLocalTag(LocalTag(req.SipCallId)); call != nil {
-	//       err := call.SwapRoom(r.Context(), req.DestinationRoom, req.DestinationToken)
-	//       writeMoveResult(w, err)
-	//       return
-	//   }
-	//   http.Error(w, "no active call with that sip_call_id", http.StatusNotFound)
-	s.log.Warnw("MoveSIPParticipant called (stub — not yet implemented)", nil,
-		"sip_call_id", req.SipCallId,
-		"destination_room", req.DestinationRoom,
-	)
-	http.Error(w, "MoveSIPParticipant: not yet implemented in fork (see docs/MOVE-SIP-PARTICIPANT.md)", http.StatusNotImplemented)
+	if s.sipMoveSIPParticipant == nil {
+		// Function pointer wasn't wired — likely a misconfigured fork build.
+		s.log.Errorw("move-sip-participant requested but handler not wired", nil)
+		http.Error(w, "MoveSIPParticipant handler not wired into service", http.StatusInternalServerError)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), moveSIPRequestTimeout)
+	defer cancel()
+
+	err := s.sipMoveSIPParticipant(ctx, req.SipCallId, req.DestinationRoom, req.DestinationToken)
+	switch {
+	case err == nil:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(MoveSIPParticipantResponse{})
+
+	case errors.Is(err, sip.MoveSIPParticipantNotFoundError):
+		http.Error(w, err.Error(), http.StatusNotFound)
+
+	default:
+		s.log.Warnw("move-sip-participant failed", err,
+			"sipCallId", req.SipCallId,
+			"destinationRoom", req.DestinationRoom,
+		)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
+
+// moveSIPRequestTimeout caps the time the HTTP handler waits for the
+// SwapRoom call to complete. SwapRoom does an lksdk reconnect to
+// LiveKit Server which is normally sub-second; a few seconds gives
+// generous margin without leaving HTTP clients hanging on a stuck
+// rendezvous.
+const moveSIPRequestTimeout = 5 * time.Second

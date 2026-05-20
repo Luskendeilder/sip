@@ -526,6 +526,119 @@ func (c *outboundCall) connectMedia() {
 	c.media.HandleDTMF(c.handleDTMF)
 }
 
+// SwapRoom relocates this outbound call into a different LiveKit room
+// while keeping the carrier-side SIP/RTP session intact. The participant
+// identity carries over; the destination room only needs to exist on the
+// same LiveKit server (single-node OSS — no distributed RPC required).
+//
+// Audio path during the swap:
+//   - SIP → LK pump (media.WriteAudioTo(c.lkRoomIn)): paused by setting
+//     audioIn to nil, which closes the old writer (a track in the old
+//     room that we're tearing down anyway). Re-attached to a fresh
+//     writer from the new room's NewParticipantTrack.
+//   - LK → SIP path (lkRoom.SwapOutput(c.media.GetAudioWriter())): the
+//     mixer in the OLD room is detached; the NEW room's mixer is wired
+//     to the same media.audioOut (single instance, reusable).
+//
+// Expected audio gap on the carrier: ~100-300ms (lksdk disconnect +
+// re-join). The SIP/UDP socket to the carrier is never touched.
+//
+// Tilbyderen fork extension. See docs/MOVE-SIP-PARTICIPANT.md.
+func (c *outboundCall) SwapRoom(ctx context.Context, destinationRoom, destinationToken string) error {
+	ctx, span := Tracer.Start(ctx, "sip.outbound.SwapRoom")
+	defer span.End()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.lkRoom == nil {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "call has no room")
+	}
+	if c.closing.IsBroken() || c.stopped.IsBroken() {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "call is closing or hung up")
+	}
+	if !c.started.IsBroken() {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "call not yet established")
+	}
+
+	// Snapshot the participant config from the current lksdk.Room so we
+	// re-join the new room with the same identity, name, metadata, and
+	// attributes. Downstream observers (our Node server) look up the
+	// SIP participant by these attributes.
+	oldLK := c.lkRoom.Room()
+	if oldLK == nil {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "no live lksdk.Room")
+	}
+	lp := oldLK.LocalParticipant
+	rconf := RoomConfig{
+		WsUrl:            c.c.conf.WsUrl,
+		Token:            destinationToken,
+		RoomName:         destinationRoom,
+		JitterBuf:        c.jitterBuf,
+		LogSignalChanges: false,
+		Participant: ParticipantConfig{
+			Identity:   lp.Identity(),
+			Name:       lp.Name(),
+			Metadata:   lp.Metadata(),
+			Attributes: lp.Attributes(),
+		},
+	}
+
+	c.log.Infow("outbound call swapping room",
+		"from_room", oldLK.Name(),
+		"to_room", destinationRoom,
+		"identity", lp.Identity(),
+	)
+
+	// Detach the SIP→LK pump. audioIn.Swap closes the old writer (which
+	// is c.lkRoomIn, backed by the old room's local track we're about to
+	// disconnect anyway). Future writes from the media port are dropped
+	// until we re-attach below.
+	c.media.WriteAudioTo(nil)
+
+	// Detach the LK→SIP path. The SwapOutput'd writer was a resampler
+	// wrapping c.media.GetAudioWriter(); the underlying audioOut is the
+	// same instance we'll reuse on the new mixer below, so we just close
+	// the resampler wrapper.
+	if w := c.lkRoom.SwapOutput(nil); w != nil {
+		_ = w.Close()
+	}
+	c.lkRoom.SetDTMFOutput(nil)
+
+	// Old c.lkRoomIn is closed by media.WriteAudioTo(nil) above; drop
+	// our reference so a half-swap can't accidentally use it.
+	c.lkRoomIn = nil
+
+	// Perform the room-level swap. SwapToRoom disconnects the outgoing
+	// lksdk.Room (suppressing the stopped fuse via swapping flag), then
+	// reuses Connect() to establish the new lksdk.Room with the same
+	// callbacks + mixer + SwitchWriter we already have.
+	if err := c.lkRoom.SwapToRoom(ctx, c.c.conf, rconf); err != nil {
+		c.log.Warnw("room swap failed", err)
+		return err
+	}
+
+	// Re-publish the SIP audio track in the new room. NewParticipantTrack
+	// allocates a fresh WebRTC track and publishes it; the returned
+	// writer is what media will feed PCM into.
+	local, err := c.lkRoom.NewParticipantTrack(RoomSampleRate)
+	if err != nil {
+		c.log.Warnw("re-publish track after swap failed", err)
+		return err
+	}
+	c.lkRoomIn = local
+
+	// Re-wire media pipelines on the new room.
+	c.connectMedia()
+
+	// Subscribe to remote tracks in the new room (matches the post-
+	// connectSIP path at outbound.go:442 for the original connect).
+	c.lkRoom.Subscribe()
+
+	c.log.Infow("outbound call swap complete", "new_room", destinationRoom)
+	return nil
+}
+
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
 
 func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState sipRespFunc) (*sip.Response, error) {

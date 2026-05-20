@@ -1447,6 +1447,88 @@ func (c *inboundCall) publishTrack() error {
 	return nil
 }
 
+// SwapRoom relocates this inbound call into a different LiveKit room
+// while keeping the carrier-side SIP/RTP session intact. Mirrors the
+// outbound case (see outbound.go) but uses the simpler inbound media
+// wiring — no c.lkRoomIn cached on the struct, just the media port's
+// internal audioIn writer.
+//
+// Tilbyderen fork extension. See docs/MOVE-SIP-PARTICIPANT.md.
+func (c *inboundCall) SwapRoom(ctx context.Context, destinationRoom, destinationToken string) error {
+	ctx, span := Tracer.Start(ctx, "sip.inbound.SwapRoom")
+	defer span.End()
+
+	c.mmu.Lock()
+	defer c.mmu.Unlock()
+
+	if c.lkRoom == nil {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "call has no room")
+	}
+	if c.done.Load() {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "call is done")
+	}
+	if !c.started.IsBroken() {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "call not yet established")
+	}
+
+	oldLK := c.lkRoom.Room()
+	if oldLK == nil {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "no live lksdk.Room")
+	}
+	lp := oldLK.LocalParticipant
+	rconf := RoomConfig{
+		WsUrl:            c.s.conf.WsUrl,
+		Token:            destinationToken,
+		RoomName:         destinationRoom,
+		JitterBuf:        c.jitterBuf,
+		LogSignalChanges: false,
+		Participant: ParticipantConfig{
+			Identity:   lp.Identity(),
+			Name:       lp.Name(),
+			Metadata:   lp.Metadata(),
+			Attributes: lp.Attributes(),
+		},
+	}
+
+	c.log().Infow("inbound call swapping room",
+		"from_room", oldLK.Name(),
+		"to_room", destinationRoom,
+		"identity", lp.Identity(),
+	)
+
+	// Detach the SIP→LK pump (closes the old track writer).
+	c.media.WriteAudioTo(nil)
+
+	// Detach the LK→SIP path (mixer → carrier).
+	if w := c.lkRoom.SwapOutput(nil); w != nil {
+		_ = w.Close()
+	}
+	c.lkRoom.SetDTMFOutput(nil)
+
+	if err := c.lkRoom.SwapToRoom(ctx, c.s.conf, rconf); err != nil {
+		c.log().Warnw("inbound room swap failed", err)
+		return err
+	}
+
+	if err := c.publishTrack(); err != nil {
+		c.log().Warnw("inbound re-publish track after swap failed", err)
+		return err
+	}
+
+	// Re-wire LK→SIP + DTMF on the new room. Mirrors the connect path
+	// at inbound.go:1087-1092.
+	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
+		_ = w.Close()
+	}
+	c.lkRoom.SetDTMFOutput(c.media)
+	c.media.HandleDTMF(c.handleDTMF)
+
+	c.lkRoom.Subscribe()
+
+	c.log().Infow("inbound call swap complete", "new_room", destinationRoom)
+	return nil
+}
+
 func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig, status CallStatus) error {
 	defer c.mon.StageDurTimer("join-room")()
 	if c.joinDur != nil {

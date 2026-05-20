@@ -333,6 +333,39 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	return resp, siperrors.ApplySIPStatus(err)
 }
 
+// MoveSIPParticipantNotFoundError is returned when no active call matches
+// the given SIP call ID. Distinguished from generic errors so the HTTP
+// handler can map to 404. Tilbyderen fork extension.
+var MoveSIPParticipantNotFoundError = errors.New("no active SIP call with that call ID")
+
+// MoveSIPParticipant relocates an active SIP call into a different
+// LiveKit room while keeping the carrier-side SIP/RTP session alive.
+// Looks up the call across both outbound (Client.activeCalls) and
+// inbound (Server.byLocalTag) registries and delegates to that worker's
+// SwapRoom. Tilbyderen fork extension; see docs/MOVE-SIP-PARTICIPANT.md.
+func (s *Service) MoveSIPParticipant(ctx context.Context, sipCallID, destinationRoom, destinationToken string) error {
+	ctx, span := Tracer.Start(ctx, "sip.Service.MoveSIPParticipant")
+	defer span.End()
+
+	tag := LocalTag(sipCallID)
+
+	if call := s.cli.GetActiveCall(tag); call != nil {
+		s.log.Infow("moving outbound SIP participant",
+			"sipCallId", sipCallID, "destinationRoom", destinationRoom,
+		)
+		return call.SwapRoom(ctx, destinationRoom, destinationToken)
+	}
+
+	if call := s.srv.GetInboundCall(tag); call != nil {
+		s.log.Infow("moving inbound SIP participant",
+			"sipCallId", sipCallID, "destinationRoom", destinationRoom,
+		)
+		return call.SwapRoom(ctx, destinationRoom, destinationToken)
+	}
+
+	return MoveSIPParticipantNotFoundError
+}
+
 func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
 	s.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 

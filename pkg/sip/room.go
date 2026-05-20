@@ -147,6 +147,15 @@ type ParticipantInfo struct {
 // RoomInterface defines the interface for room operations
 type RoomInterface interface {
 	Connect(ctx context.Context, conf *config.Config, rconf RoomConfig) error
+	// SwapToRoom disconnects the current lksdk.Room and reconnects to a
+	// different room with a new token. Used by the MoveSIPParticipant
+	// admin endpoint (Tilbyderen fork) to relocate a SIP participant
+	// between rooms while keeping the carrier-side SIP/RTP session alive.
+	//
+	// Caller must re-publish the participant track via NewParticipantTrack
+	// on the returned (still the same) Room — the new lksdk.Room has no
+	// local tracks until they're explicitly published.
+	SwapToRoom(ctx context.Context, conf *config.Config, rconf RoomConfig) error
 	Closed() <-chan struct{}
 	ClosedReason() lksdk.DisconnectionReason
 	Subscribed() <-chan struct{}
@@ -185,6 +194,12 @@ type Room struct {
 	closed       core.Fuse
 	closedReason atomic.Pointer[lksdk.DisconnectionReason]
 	stats        *RoomStats
+	// swapping is set to true for the duration of a SwapToRoom call so
+	// that OnDisconnectedWithReason on the OUTGOING lksdk.Room doesn't
+	// break the `stopped` fuse — which would otherwise make the call
+	// worker treat the swap as a permanent termination. Tilbyderen
+	// fork extension; see docs/MOVE-SIP-PARTICIPANT.md.
+	swapping atomic.Bool
 }
 
 type ParticipantConfig struct {
@@ -401,6 +416,14 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 			},
 		},
 		OnDisconnectedWithReason: func(reason lksdk.DisconnectionReason) {
+			// During a SwapToRoom we expect exactly one disconnect on the
+			// outgoing lksdk.Room. Don't propagate it as a permanent
+			// termination — the call worker is still alive and is about
+			// to be reconnected to a new room.
+			if r.swapping.Load() {
+				r.log.Debugw("ignoring disconnect during room swap", "reason", reason)
+				return
+			}
 			r.closedReason.Store(&reason)
 			r.stopped.Break()
 		},
@@ -457,6 +480,70 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 	r.subscribe.Store(false) // already false, but keep for visibility
 
 	// Not subscribing to any tracks just yet!
+	return nil
+}
+
+// SwapToRoom disconnects the current lksdk.Room and reconnects to a new
+// room via the existing Connect() path. The Room's mixer + SIP output
+// SwitchWriter are preserved (they live above the lksdk.Room), so the
+// carrier-side audio path stays intact across the swap. Subscribed track
+// goroutines for the old room exit naturally when the lksdk.Room closes;
+// new ones are bootstrapped by the next Subscribe() call.
+//
+// Caller MUST re-publish the local audio track via NewParticipantTrack
+// after this returns — the new lksdk.Room has no published tracks.
+//
+// Tilbyderen fork extension. See docs/MOVE-SIP-PARTICIPANT.md.
+func (r *Room) SwapToRoom(ctx context.Context, conf *config.Config, rconf RoomConfig) error {
+	if r == nil {
+		return errors.New("nil room")
+	}
+	if r.closed.IsBroken() {
+		return errors.New("room already closed")
+	}
+	if r.stopped.IsBroken() {
+		return errors.New("room already stopped")
+	}
+
+	// Suppress the OnDisconnectedWithReason → stopped.Break() that would
+	// otherwise fire when we disconnect the outgoing lksdk.Room. The flag
+	// is checked inside the disconnect callback (see Connect). Release on
+	// any exit path so a failed swap doesn't leave the call permanently
+	// in "swapping" state.
+	r.swapping.Store(true)
+	defer r.swapping.Store(false)
+
+	r.log.Infow("swapping room", "new_room", rconf.RoomName)
+
+	// Disable auto-subscribe BEFORE disconnecting so the brief window
+	// between disconnect and reconnect doesn't accept stragglers.
+	r.subscribe.Store(false)
+
+	// Disconnect the current lksdk.Room. This triggers
+	// OnTrackUnsubscribed for each remote track, whose goroutines exit
+	// on EOF; mixer inputs close naturally.
+	if oldLK := r.room; oldLK != nil {
+		oldLK.DisconnectWithReason(livekit.DisconnectReason_CLIENT_INITIATED)
+	}
+	r.room = nil
+
+	// Reset the one-shot fuses that gate "ready" and "first track
+	// subscribed". Connect() breaks `ready` at the end; we'll re-break
+	// `subscribed` once a track lands in the new room. We deliberately
+	// do NOT reset `stopped` or `closed` — those represent the lifetime
+	// of the call worker above us, which is NOT being terminated.
+	r.ready = core.Fuse{}
+	r.subscribed = core.Fuse{}
+
+	// Reuse the existing connect path. Connect handles room callbacks,
+	// token signing (if Token empty), joining, and setting r.room +
+	// r.p. After it returns, the Room is in the same state as a fresh
+	// post-Connect Room minus a re-published local track (caller's
+	// responsibility — see NewParticipantTrack).
+	if err := r.Connect(ctx, conf, rconf); err != nil {
+		return err
+	}
+	r.log.Infow("room swap connected")
 	return nil
 }
 

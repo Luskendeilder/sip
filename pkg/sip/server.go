@@ -378,3 +378,13 @@ func (s *Server) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCa
 func (s *Server) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
 	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }
+
+// GetInboundCall returns the inbound call worker for a given local tag
+// (== LiveKit SIP call ID). Returns nil if no such call. Used by the
+// MoveSIPParticipant admin endpoint to locate the worker before
+// orchestrating a room swap. Tilbyderen fork extension.
+func (s *Server) GetInboundCall(tag LocalTag) *inboundCall {
+	s.cmu.RLock()
+	defer s.cmu.RUnlock()
+	return s.byLocalTag[tag]
+}
