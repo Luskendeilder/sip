@@ -103,7 +103,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	room.LogSignalChanges = signalLoggingEnabled
 
 	tr := TransportFrom(sipConf.transport)
-	contact := c.ContactURI(tr)
+	contact := c.ContactURI(tr, sipConf.from)
 	if sipConf.host == "" {
 		sipConf.host = contact.GetHost()
 	}
