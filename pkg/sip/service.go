@@ -67,6 +67,7 @@ type Service struct {
 	mon     *stats.Monitor
 	cli     *Client
 	srv     *Server
+	reg     *Registrar
 	closers []io.Closer
 
 	mu               sync.Mutex
@@ -192,6 +193,12 @@ func (s *Service) ActiveCalls() ActiveCalls {
 }
 
 func (s *Service) Stop() {
+	// Stop the registrar BEFORE the client so the unREGISTER messages
+	// can flow through the still-live sipgo transport. Registrar.Close
+	// best-effort sends Expires: 0 for every active registration.
+	if s.reg != nil {
+		s.reg.Close()
+	}
 	s.cli.Stop()
 	s.srv.Stop()
 	s.mon.Stop()
@@ -199,6 +206,11 @@ func (s *Service) Stop() {
 		_ = c.Close()
 	}
 }
+
+// Registrar returns the SIP registrar managing outbound trunk
+// REGISTERs. Returns nil if no registrations were configured.
+// Tilbyderen fork extension.
+func (s *Service) Registrar() *Registrar { return s.reg }
 
 func (s *Service) SetHandler(handler Handler) {
 	s.srv.SetHandler(handler)
@@ -310,6 +322,18 @@ func (s *Service) Start() error {
 	// Thus, all unhandled transactions will be checked by the client.
 	if err := s.srv.Start(ua, s.sconf, tlsConf, s.cli.OnRequest); err != nil {
 		return err
+	}
+	// Build + start the registrar AFTER the client is up — Registrar
+	// sends REGISTER through s.cli.sipCli which only exists post-Start.
+	// A misconfigured outbound_registrations entry (missing creds, bad
+	// transport) fails fast here rather than silently going off-air.
+	if len(s.conf.OutboundRegistrations) > 0 {
+		reg, err := NewRegistrar(s.cli, s.mon, s.log)
+		if err != nil {
+			return fmt.Errorf("sip registrar: %w", err)
+		}
+		s.reg = reg
+		s.reg.Start()
 	}
 	s.log.Debugw("sip service ready")
 	return nil
