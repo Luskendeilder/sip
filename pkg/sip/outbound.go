@@ -102,7 +102,11 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	room.LogSignalChanges = signalLoggingEnabled
 
 	tr := TransportFrom(sipConf.transport)
-	contact := c.ContactURI(tr)
+	var contactUser string
+	if sipConf.from != nil {
+		contactUser = sipConf.from.Address.User
+	}
+	contact := c.ContactURI(tr, contactUser)
 
 	now := time.Now()
 	call := &outboundCall{
