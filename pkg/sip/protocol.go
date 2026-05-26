@@ -219,6 +219,13 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 	if t == TransportTLS {
 		hostname = c.SIPHostname
 	}
+	// Override with configured contact user-part if set.
+	// Carriers like Telavox validate Contact user against the
+	// registered trunk account and silently drop in-dialog messages
+	// whose user-part doesn't match.
+	if c.SIPContactUser != "" {
+		user = c.SIPContactUser
+	}
 	return URI{
 		Host:      hostname,
 		Addr:      netip.AddrPortFrom(ip, uint16(transportPort(c, t))),
