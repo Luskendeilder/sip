@@ -92,6 +92,14 @@ type Config struct {
 	SIPPort              int                 `yaml:"sip_port"`        // announced SIP signaling port
 	SIPPortListen        int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
 	SIPHostname          string              `yaml:"sip_hostname"`
+	// SIPContactUser overrides the user-part of the Contact URI we emit
+	// in responses to inbound INVITEs and in outbound INVITEs. Some
+	// carriers (notably Telavox) validate the Contact user-part against
+	// the registered trunk account and silently drop in-dialog messages
+	// (ACK, BYE) whose Contact user doesn't match. When set, this value
+	// is used instead of To.User (inbound) or sipConf.from (outbound).
+	// Example: sip_contact_user: u004753218926
+	SIPContactUser       string              `yaml:"sip_contact_user"`
 	OutboundRouteHeaders []string            `yaml:"outbound_route_headers"` // Route headers prepended to outbound requests, e.g. "<sip:proxy:5060;transport=tcp;lr>"
 	SIPRingingInterval   time.Duration       `yaml:"sip_ringing_interval"`   // from 1 sec up to 60 (default '1s')
 	TCP                  *TCPConfig          `yaml:"tcp"`
