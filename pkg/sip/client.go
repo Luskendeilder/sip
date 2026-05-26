@@ -164,8 +164,8 @@ func (c *Client) SetHandler(handler Handler) {
 	c.handler = handler
 }
 
-func (c *Client) ContactURI(tr Transport) URI {
-	return getContactURI(c.conf, c.sconf.SignalingIP, tr)
+func (c *Client) ContactURI(tr Transport, user string) URI {
+	return getContactURI(c.conf, c.sconf.SignalingIP, tr, user)
 }
 
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
@@ -352,7 +352,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if req.RoomName == "" {
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "room name must be set")
 	}
-	defaultHost := c.ContactURI(TransportFrom(req.Transport)).GetHost()
+	defaultHost := c.ContactURI(TransportFrom(req.Transport), "").GetHost()
 	log := c.log
 	if req.ProjectId != "" {
 		log = log.WithValues("projectID", req.ProjectId)
