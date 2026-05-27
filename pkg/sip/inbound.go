@@ -1190,6 +1190,22 @@ func (c *inboundCall) waitSubscribe(ctx context.Context, timeout time.Duration) 
 	ctx, span := Tracer.Start(ctx, "sip.inbound.waitSubscribe")
 	defer span.End()
 	defer c.mon.StageDurTimer("wait-subscribe")()
+
+	// Opt-out gate (Tilbyderen fork): when SkipInboundSubscribeWait is set,
+	// return immediately so the carrier gets 200 OK without us blocking on
+	// a subscriber. The original gate exists to avoid accepting calls that
+	// no one will hear — but for deployments where a subscriber may arrive
+	// after the carrier's INVITE-cancel window (Telavox: 30 s), the gate
+	// causes far worse damage than it prevents (487-cancel storm →
+	// carrier-side de-prioritisation of the registered Contact for hours).
+	// We still observe cc.Cancelled / ctx.Done / room.Closed below for
+	// genuine race-during-accept conditions; we just don't fail because
+	// no subscriber turned up in time.
+	if c.s.conf.SkipInboundSubscribeWait {
+		c.log().Infow("waitSubscribe: skipped (skip_inbound_subscribe_wait=true)")
+		return true, nil
+	}
+
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
