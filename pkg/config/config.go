@@ -86,12 +86,12 @@ type Config struct {
 	ApiSecret string             `yaml:"api_secret"` // required (env LIVEKIT_API_SECRET)
 	WsUrl     string             `yaml:"ws_url"`     // required (env LIVEKIT_WS_URL)
 
-	HealthPort           int                 `yaml:"health_port"`
-	PrometheusPort       int                 `yaml:"prometheus_port"`
-	PProfPort            int                 `yaml:"pprof_port"`
-	SIPPort              int                 `yaml:"sip_port"`        // announced SIP signaling port
-	SIPPortListen        int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
-	SIPHostname          string              `yaml:"sip_hostname"`
+	HealthPort     int    `yaml:"health_port"`
+	PrometheusPort int    `yaml:"prometheus_port"`
+	PProfPort      int    `yaml:"pprof_port"`
+	SIPPort        int    `yaml:"sip_port"`        // announced SIP signaling port
+	SIPPortListen  int    `yaml:"sip_port_listen"` // SIP signaling port to listen on
+	SIPHostname    string `yaml:"sip_hostname"`
 	// SIPContactUser overrides the user-part of the Contact URI we emit
 	// in responses to inbound INVITEs and in outbound INVITEs. Some
 	// carriers (notably Telavox) validate the Contact user-part against
@@ -99,7 +99,21 @@ type Config struct {
 	// (ACK, BYE) whose Contact user doesn't match. When set, this value
 	// is used instead of To.User (inbound) or sipConf.from (outbound).
 	// Example: sip_contact_user: u004753218926
-	SIPContactUser       string              `yaml:"sip_contact_user"`
+	SIPContactUser string `yaml:"sip_contact_user"`
+
+	// SkipInboundSubscribeWait makes inbound calls accept (send 200 OK to
+	// the carrier) immediately on dispatch instead of waiting for a LK
+	// participant to subscribe to the SIP track first. Default false keeps
+	// upstream behaviour. Set true when your downstream flow has a
+	// subscriber that may arrive AFTER the carrier's INVITE-cancel window
+	// (Telavox cancels at 30 s) — without it the inbound call gets 487-
+	// cancelled, the carrier de-prioritises the contact, and subsequent
+	// calls go to voicemail for hours. Trade-off: if no subscriber EVER
+	// attaches, the caller hears silence until they hang up rather than
+	// failing fast at 30 s — strictly better for us because a 487 also
+	// breaks future inbound routing.
+	SkipInboundSubscribeWait bool `yaml:"skip_inbound_subscribe_wait"`
+
 	OutboundRouteHeaders []string            `yaml:"outbound_route_headers"` // Route headers prepended to outbound requests, e.g. "<sip:proxy:5060;transport=tcp;lr>"
 	SIPRingingInterval   time.Duration       `yaml:"sip_ringing_interval"`   // from 1 sec up to 60 (default '1s')
 	TCP                  *TCPConfig          `yaml:"tcp"`
@@ -121,16 +135,16 @@ type Config struct {
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
 
-	MediaTimeout         time.Duration   `yaml:"media_timeout"`
-	MediaTimeoutInitial  time.Duration   `yaml:"media_timeout_initial"`
-	SymmetricRTP         bool            `yaml:"symmetric_rtp"`
+	MediaTimeout        time.Duration `yaml:"media_timeout"`
+	MediaTimeoutInitial time.Duration `yaml:"media_timeout_initial"`
+	SymmetricRTP        bool          `yaml:"symmetric_rtp"`
 	// RTPDrainingIdleTimeout / RTPDrainingDuration control how long a closed call's RTP
 	// port is kept bound and draining before it can be reallocated. Set to a negative
 	// value to disable. Zero uses the defaults.
-	RTPDrainingIdleTimeout time.Duration `yaml:"rtp_draining_idle_timeout"`
-	RTPDrainingDuration    time.Duration `yaml:"rtp_draining_duration"`
-	IgnoreLocalAddrInSDP bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
-	Codecs               map[string]bool `yaml:"codecs"`
+	RTPDrainingIdleTimeout time.Duration   `yaml:"rtp_draining_idle_timeout"`
+	RTPDrainingDuration    time.Duration   `yaml:"rtp_draining_duration"`
+	IgnoreLocalAddrInSDP   bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
+	Codecs                 map[string]bool `yaml:"codecs"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
