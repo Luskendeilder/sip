@@ -154,6 +154,20 @@ type Config struct {
 	// is used instead of To.User (inbound) or sipConf.from (outbound).
 	// Example: sip_contact_user: u004753218926
 	SIPContactUser       string              `yaml:"sip_contact_user"`
+
+	// SkipInboundSubscribeWait makes inbound calls accept (send 200 OK to
+	// the carrier) immediately on dispatch instead of waiting for a LK
+	// participant to subscribe to the SIP track first. Default false keeps
+	// upstream behaviour. Set true when your downstream flow has a
+	// subscriber that may arrive AFTER the carrier's INVITE-cancel window
+	// (Telavox cancels at 30 s) — without it the inbound call gets 487-
+	// cancelled, the carrier de-prioritises the contact, and subsequent
+	// calls go to voicemail for hours. Trade-off: if no subscriber EVER
+	// attaches, the caller hears silence until they hang up rather than
+	// failing fast at 30 s — strictly better for us because a 487 also
+	// breaks future inbound routing.
+	SkipInboundSubscribeWait bool             `yaml:"skip_inbound_subscribe_wait"`
+
 	OutboundRouteHeaders []string            `yaml:"outbound_route_headers"` // Route headers prepended to outbound requests, e.g. "<sip:proxy:5060;transport=tcp;lr>"
 
 	// OutboundRegistrations are SIP REGISTER loops kept alive on
