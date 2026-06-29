@@ -186,6 +186,10 @@ type Room struct {
 	stopped    core.Fuse
 	closed     core.Fuse
 	stats      *RoomStats
+	// subMute: remote participant identities this SIP leg must NOT
+	// auto-subscribe to (warm-transfer consult isolation). Populated from
+	// the consultMuteAttr attribute at Connect time; consumed in subscribeTo.
+	subMute map[string]struct{}
 }
 
 type ParticipantConfig struct {
@@ -288,10 +292,21 @@ func (r *Room) participantLeft(rp *lksdk.RemoteParticipant) {
 	log.Debugw("participant left")
 }
 
+// consultMuteAttr is a participant attribute (comma-separated identity list)
+// set by the Tilbyderen server on a warm-transfer consult target. This SIP
+// leg skips auto-subscribing to any listed remote identity, keeping the
+// customer inaudible to the transfer target until the agent commits the
+// transfer (the server then subscribes the target explicitly).
+const consultMuteAttr = "tilbyderen.consult_mute"
+
 func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 	log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID(), "trackID", pub.SID(), "trackName", pub.Name())
 	if pub.Kind() != lksdk.TrackKindAudio {
 		log.Debugw("skipping non-audio track")
+		return
+	}
+	if _, muted := r.subMute[string(rp.Identity())]; muted {
+		log.Infow("consult-mute: skipping subscription (warm-transfer isolation)")
 		return
 	}
 	log.Debugw("subscribing to a track")
@@ -311,6 +326,17 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 		RoomName: rconf.RoomName,
 		Identity: partConf.Identity,
 		Name:     partConf.Name,
+	}
+
+	// Warm-transfer consult isolation: skip auto-subscribing this leg to the
+	// identities listed in the consultMuteAttr attribute (comma-separated).
+	if v := partConf.Attributes[consultMuteAttr]; v != "" {
+		r.subMute = make(map[string]struct{})
+		for _, id := range strings.Split(v, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				r.subMute[id] = struct{}{}
+			}
+		}
 	}
 	roomCallback := &lksdk.RoomCallback{
 		OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
