@@ -891,6 +891,14 @@ type sipOutbound struct {
 	referCseq        uint32
 	referDone        chan error
 	latestInviteCSeq uint32
+
+	// RFC 3263 resolved candidates for the initial INVITE. destTargets is
+	// ordered best-first; destIdx is the candidate currently in use. Once any
+	// response is received the destination is pinned for the rest of the dialog
+	// so in-dialog requests (ACK/BYE/CANCEL) reach the same proxy.
+	destTargets []Target
+	destIdx     int
+	destPinned  bool
 }
 
 func (c *sipOutbound) From() sip.Uri {
@@ -1004,6 +1012,10 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 			sipHeaders = append(sipHeaders, sip.NewHeader(key, headers[key]))
 		}
 	}
+	// Resolve where to actually send this INVITE (RFC 3263). Done once per call;
+	// the chosen candidate is pinned as soon as the far end responds.
+	c.resolveDest(ctx)
+
 authLoop:
 	for try := 0; ; try++ {
 		if try >= 5 {
@@ -1011,8 +1023,17 @@ authLoop:
 		}
 		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
+			// Transport-level failure before any response: the chosen proxy is
+			// unreachable, so try the next RFC 3263 candidate instead of failing
+			// the whole call. Does nothing once a response has pinned the target.
+			if c.nextDest() {
+				try--
+				continue
+			}
 			return nil, err
 		}
+		// Any response means this candidate works; stick with it for the dialog.
+		c.pinDest()
 		var authHeaderName string
 		switch resp.StatusCode {
 		case sip.StatusOK:
@@ -1177,6 +1198,14 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		req.PrependHeader(sip.NewHeader("Route", route))
 	}
 
+	// Point this request at a concrete ip:port resolved via RFC 3263. sipgo only
+	// consults its own resolver when the destination is not already a literal
+	// address, so setting it here bypasses that path. See srv_resolve.go for why
+	// we cannot rely on sipgo resolveAddr.
+	if dest := c.currentDest(); dest != "" {
+		req.SetDestination(dest)
+	}
+
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
 		return nil, nil, err
@@ -1213,6 +1242,67 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		go watchCancelledInvite(c.log, c.c.sipCli, c.getHeaders, req, tx)
 	}
 	return req, resp, err
+}
+
+// resolveDest populates the ordered RFC 3263 candidate list for the initial
+// INVITE. Callers hold c.mu. A resolution failure is not fatal: we fall back to
+// letting sipgo resolve the R-URI host as before, so behaviour is never worse
+// than upstream.
+func (c *sipOutbound) resolveDest(ctx context.Context) {
+	if len(c.destTargets) != 0 || c.uri == nil {
+		return
+	}
+	host := c.uri.Host
+	if host == "" {
+		return
+	}
+	// The R-URI carries the transport we will actually use, and sipgo picks the
+	// same one, so it decides which SRV service we look up.
+	transport := string(transportFromURI(c.uri))
+	targets, err := ResolveTargets(ctx, nil, host, c.uri.Port, transport)
+	if err != nil {
+		c.log.Infow("SIP target resolution failed, falling back to transport resolver", "host", host, "transport", transport, "error", err)
+		return
+	}
+	c.destTargets, c.destIdx = targets, 0
+	addrs := make([]string, 0, len(targets))
+	for _, t := range targets {
+		addrs = append(addrs, t.Addr)
+	}
+	c.log.Debugw("resolved SIP targets", "host", host, "transport", transport, "targets", addrs)
+}
+
+// currentDest returns the ip:port for the candidate in use, or "" to let sipgo
+// resolve the R-URI itself. Callers hold c.mu.
+func (c *sipOutbound) currentDest() string {
+	if c.destIdx < 0 || c.destIdx >= len(c.destTargets) {
+		return ""
+	}
+	return c.destTargets[c.destIdx].Addr
+}
+
+// nextDest advances to the next candidate after a transport-level failure.
+// It reports false when the destination is pinned (a response was already seen)
+// or the list is exhausted. Callers hold c.mu.
+func (c *sipOutbound) nextDest() bool {
+	if c.destPinned || len(c.destTargets) == 0 {
+		return false
+	}
+	if c.destIdx+1 >= len(c.destTargets) {
+		return false
+	}
+	prev := c.destTargets[c.destIdx]
+	c.destIdx++
+	c.log.Infow("SIP target unreachable, failing over",
+		"from", prev.Addr, "fromHost", prev.Host,
+		"to", c.destTargets[c.destIdx].Addr, "toHost", c.destTargets[c.destIdx].Host)
+	return true
+}
+
+// pinDest freezes the destination once the far end has answered on it, so every
+// in-dialog request follows the same path. Callers hold c.mu.
+func (c *sipOutbound) pinDest() {
+	c.destPinned = true
 }
 
 func (c *sipOutbound) WriteRequest(req *sip.Request) error {
