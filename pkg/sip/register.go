@@ -160,7 +160,11 @@ func newRegistrant(log logger.Logger, cli SIPClient, mon *stats.Monitor, conf *c
 	}
 	aor := sip.Uri{Scheme: registrar.Scheme, User: rc.Username, Host: domain}
 
-	contact := getContactURI(conf, sconf.SignalingIP, tr)
+	// Fork: getContactURI takes the Contact user-part explicitly (Telavox
+	// validates it against the account). Pass this registration's username,
+	// and re-assert it below so the global sip_contact_user override can
+	// never make a second account register the first account's number.
+	contact := getContactURI(conf, sconf.SignalingIP, tr, rc.Username)
 	contact.User = rc.Username
 
 	authUser := rc.AuthUsername
