@@ -63,6 +63,17 @@ type EndCall struct {
 	Term    stats.Termination
 	Reason  livekit.DisconnectReason // disconnect reason for LiveKit participant
 	Headers map[string]string        // extra headers to send to SIP peer
+	// SIPStatusCode is the SIP final response that ended the call (486, 603,
+	// 480 ...), or 0 when the call did not end on a SIP final response.
+	// Tilbyderen fork (2026-08-18): LiveKit's DisconnectReason collapses
+	// 486 Busy / 603 Decline / 600 Busy-Everywhere into USER_REJECTED and
+	// 480 / 408 into USER_UNAVAILABLE, and the CreateSIPParticipant RPC has
+	// already returned by the time the final response arrives (we do not
+	// wait_until_answered), so this code otherwise dies with the SIP leg.
+	// It is exported to the room as the participant attribute
+	// AttrSIPStatusCode just before the leg leaves.
+	SIPStatusCode int
+	SIPStatus     string
 }
 
 var statusNamesMap = map[int]string{

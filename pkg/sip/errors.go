@@ -216,6 +216,8 @@ func classifyInviteError(err error) inviteFailure {
 
 	if sipStatus, ok := errors.AsType[*livekit.SIPStatus](err); ok {
 		code := int(sipStatus.Code)
+		res.SIPStatusCode = code
+		res.SIPStatus = sipStatus.GetStatus()
 		switch code {
 		case int(sip.StatusUnauthorized), int(sip.StatusProxyAuthRequired):
 			res.Status, res.Term, res.Reason = callRejected, stats.ClientError("auth-required"), livekit.DisconnectReason_USER_REJECTED
@@ -270,6 +272,11 @@ func classifyInviteError(err error) inviteFailure {
 	if errors.Is(err, ErrSIPRequestTimeout) {
 		res.Status, res.Term, res.Reason = callUnavailable, stats.ClientError("no-answer"), livekit.DisconnectReason_USER_UNAVAILABLE
 		res.Report = nil
+		// No final response arrived before our ring timeout. 408 is the
+		// RFC 3261 code for exactly that, so downstream can tell a plain
+		// ring-out from a 480 (switched off / no coverage).
+		res.SIPStatusCode = int(sip.StatusRequestTimeout)
+		res.SIPStatus = "Request Timeout (ring timeout)"
 		return res
 	}
 

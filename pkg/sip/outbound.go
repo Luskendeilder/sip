@@ -366,6 +366,7 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		}()
 
 		c.setStatus(end.Status)
+		c.setFinalSIPStatus(end)
 		if err := end.Report; err != nil {
 			log.Warnw("Closing outbound call with error", err)
 		} else {
@@ -645,6 +646,43 @@ func (c *outboundCall) setStatus(v CallStatus) {
 	r.LocalParticipant.SetAttributes(map[string]string{
 		livekit.AttrSIPCallStatus: attr,
 	})
+}
+
+// setFinalSIPStatus publishes the SIP final response that ended the leg as
+// participant attributes, and waits (bounded) for the server to echo them
+// back before the caller proceeds to CloseWithReason.
+//
+// Why the wait: LocalParticipant.SetAttributes is fire-and-forget, and the
+// SDK only updates its local copy of Attributes() when the server echoes the
+// change. Measured on prod 2026-08-18: the AttrSIPCallStatus="hangup" write
+// that setStatus does one line above lands in the participant_left webhook
+// only 5 of 199 times — the Leave races the metadata update and usually wins.
+// Attributes written earlier in the call arrive every time. So we write, then
+// poll our own Attributes() until the server has confirmed the value (or
+// 300 ms elapse), which makes the code reliably present on participant_left.
+// The delay only applies to legs that ended on a SIP final response and is
+// bounded; a nil room (never joined) is a no-op.
+func (c *outboundCall) setFinalSIPStatus(end EndCall) {
+	if end.SIPStatusCode == 0 || c.lkRoom == nil {
+		return
+	}
+	r := c.lkRoom.Room()
+	if r == nil {
+		return
+	}
+	code := strconv.Itoa(end.SIPStatusCode)
+	r.LocalParticipant.SetAttributes(map[string]string{
+		AttrSIPStatusCode: code,
+		AttrSIPStatus:     end.SIPStatus,
+	})
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if r.LocalParticipant.Attributes()[AttrSIPStatusCode] == code {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c.log.Debugw("final SIP status attribute not echoed before close", "code", code)
 }
 
 func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.SIPHeaderOptions, cc Signaling, hdrs Headers) {
