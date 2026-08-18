@@ -175,6 +175,21 @@ type Config struct {
 	// breaks future inbound routing.
 	SkipInboundSubscribeWait bool `yaml:"skip_inbound_subscribe_wait"`
 
+	// InboundRingbackUntilSubscribed (Tilbyderen fork, 2026-08-18) plays the
+	// ETSI ringback tone (425 Hz, 1 s on / 4 s off — what a Norwegian caller
+	// expects to hear while a phone rings) INTO the caller's leg from the
+	// moment the call is accepted until the leg subscribes to its first
+	// remote audio track (an agent joined) or the call ends. Only meaningful
+	// together with SkipInboundSubscribeWait: that gate answers the call
+	// immediately, so a queued caller otherwise sits on an answered leg in
+	// dead silence while routing/offer runs — and hangs up. Playing the
+	// tone locally is deliberate: holding the INVITE open (180 Ringing) past
+	// the carrier's cancel window is exactly what SkipInboundSubscribeWait
+	// exists to avoid. The tone is written to the SIP writer only (not
+	// published to the room), so recordings never contain it. Default false
+	// keeps upstream behaviour.
+	InboundRingbackUntilSubscribed bool `yaml:"inbound_ringback_until_subscribed"`
+
 	OutboundRouteHeaders []string `yaml:"outbound_route_headers"` // Route headers prepended to outbound requests, e.g. "<sip:proxy:5060;transport=tcp;lr>"
 
 	// OutboundRegistrations are SIP REGISTER loops kept alive on

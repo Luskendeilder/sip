@@ -1027,6 +1027,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if ok, err := acceptCall(answerData); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
+		// Tilbyderen fork: the call is now answered but, with the subscribe
+		// gate skipped, possibly nobody is there yet. Ring in the caller's
+		// ear until an agent's audio arrives.
+		c.ringbackUntilSubscribed(ctx)
 	}
 
 	c.state.Update(func(info *livekit.SIPCallInfo) {
@@ -1041,6 +1045,85 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 
 	c.started.Break()
 	return c.waitForCallEnd(ctx, ackReceived, ackTimeout, mconf.MediaTimeout)
+}
+
+// ringbackUntilSubscribed plays the ETSI ringback tone into the caller's SIP
+// leg from accept until the leg subscribes to its first remote audio track
+// (an agent joined and published) or the call ends. Tilbyderen fork,
+// 2026-08-18; gated on config.InboundRingbackUntilSubscribed.
+//
+// Why: with skip_inbound_subscribe_wait the carrier gets 200 OK immediately
+// (holding the INVITE past Telavox's 30 s cancel window de-prioritises our
+// registered contact for hours — see that option's comment). The price was
+// that a queued caller sat on an answered leg in dead silence while routing /
+// the accept-decline offer ran, and hung up. This gives them what a ringing
+// phone sounds like instead.
+//
+// Mechanics mirror transferCall's dialtone: the room's mixed output is
+// swapped out (SwapOutput(nil)) while the tone plays so the mixer's silence
+// frames and the tone don't interleave on the same writer, and swapped back
+// the moment we stop. Stop order matters: cancel the tone, WAIT for the
+// player goroutine to exit, then restore the output — otherwise a late tone
+// frame lands on top of the agent's first words. The tone is never published
+// to the room, so recordings and the agent hear nothing of it.
+//
+// Non-blocking: returns immediately after starting the goroutine. No-op when
+// the config is off, the leg is already subscribed (agent was waiting), or
+// media is not up.
+func (c *inboundCall) ringbackUntilSubscribed(ctx context.Context) {
+	if !c.s.conf.InboundRingbackUntilSubscribed {
+		return
+	}
+	if c.lkRoom == nil || c.media == nil || c.done.Load() {
+		return
+	}
+	select {
+	case <-c.lkRoom.Subscribed():
+		return // an agent is already there — nothing to ring for
+	default:
+	}
+	aw := c.media.GetAudioWriter()
+	if aw == nil {
+		return
+	}
+	// Bounded: nothing should ring for longer than the routing engine keeps a
+	// caller queued (90 s maxWait today); 10 min is a safety net only.
+	const maxRingback = 10 * time.Minute
+	const ringVolume = math.MaxInt16 / 2
+
+	rctx, rcancel := context.WithCancel(context.WithoutCancel(ctx))
+	// Mute the room → SIP direction while we ring, exactly like transferCall.
+	w := c.lkRoom.SwapOutput(nil)
+	played := make(chan struct{})
+	go func() {
+		defer close(played)
+		err := tones.Play(rctx, aw, ringVolume, tones.ETSIRinging)
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			c.log().Infow("inbound ringback: cannot play tone", "error", err)
+		}
+	}()
+	c.log().Infow("inbound ringback: started (until first subscribed track)")
+	go func() {
+		start := time.Now()
+		reason := "subscribed"
+		select {
+		case <-c.lkRoom.Subscribed():
+		case <-c.lkRoom.Closed():
+			reason = "room-closed"
+		case <-ctx.Done():
+			reason = "call-ended"
+		case <-time.After(maxRingback):
+			reason = "max-duration"
+		}
+		rcancel()
+		<-played // never let a tone frame trail the agent's first words
+		if !c.done.Load() {
+			c.lkRoom.SwapOutput(w)
+		} else if w != nil {
+			w.Close()
+		}
+		c.log().Infow("inbound ringback: stopped", "reason", reason, "afterMs", time.Since(start).Milliseconds())
+	}()
 }
 
 func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan struct{}, ackTimeout <-chan time.Time, mediaTimeout time.Duration) error {
