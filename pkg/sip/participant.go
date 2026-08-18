@@ -86,6 +86,10 @@ const (
 const (
 	AttrSIPCallIDFull = livekit.AttrSIPPrefix + "callIDFull"
 	AttrSIPCallTag    = livekit.AttrSIPPrefix + "callTag"
+	// Tilbyderen fork: final SIP response code / reason phrase of the leg,
+	// set right before it leaves so participant_left carries it.
+	AttrSIPStatusCode = livekit.AttrSIPPrefix + "statusCode"
+	AttrSIPStatus     = livekit.AttrSIPPrefix + "status"
 )
 
 var headerToLog = map[string]string{
