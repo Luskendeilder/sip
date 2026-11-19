@@ -25,6 +25,34 @@ type TilbyderenConfig struct {
 	// Example: sip_contact_user: u004753218926
 	SIPContactUser string `yaml:"sip_contact_user"`
 
+	// SkipInboundSubscribeWait makes inbound calls accept (send 200 OK to
+	// the carrier) immediately on dispatch instead of waiting for a LK
+	// participant to subscribe to the SIP track first. Default false keeps
+	// upstream behaviour. Set true when your downstream flow has a
+	// subscriber that may arrive AFTER the carrier's INVITE-cancel window
+	// (Telavox cancels at 30 s): without it the inbound call gets
+	// 487-cancelled, the carrier de-prioritises the contact, and subsequent
+	// calls go to voicemail for hours. Trade-off: if no subscriber EVER
+	// attaches, the caller hears silence until they hang up rather than
+	// failing fast at 30 s. That is strictly better for us because a 487 also
+	// breaks future inbound routing. See pkg/callext (room.Subscribed).
+	SkipInboundSubscribeWait bool `yaml:"skip_inbound_subscribe_wait"`
+
+	// InboundRingbackUntilSubscribed plays the ETSI ringback tone (425 Hz,
+	// 1 s on / 4 s off, what a Norwegian caller expects to hear while a
+	// phone rings) INTO the caller's leg from the moment the call is accepted
+	// until the leg subscribes to its first remote audio track (an agent
+	// joined) or the call ends. Only meaningful together with
+	// SkipInboundSubscribeWait: that gate answers the call immediately, so a
+	// queued caller otherwise sits on an answered leg in dead silence while
+	// routing runs, and hangs up. Playing the tone locally is deliberate:
+	// holding the INVITE open (180 Ringing) past the carrier's cancel window
+	// is exactly what SkipInboundSubscribeWait exists to avoid. The tone is
+	// written to the SIP writer only (not published to the room), so
+	// recordings never contain it. Default false keeps upstream behaviour.
+	// See pkg/callext (room.WriteOutboundAudioTo).
+	InboundRingbackUntilSubscribed bool `yaml:"inbound_ringback_until_subscribed"`
+
 	// EventStream writes every signaling event and every call record update
 	// of this node to a Redis stream. See pkg/eventsink. Off by default.
 	EventStream EventStreamConfig `yaml:"event_stream"`

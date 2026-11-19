@@ -254,6 +254,10 @@ type Room struct {
 	stopped        core.Fuse
 	closed         core.Fuse
 	stats          *RoomStats
+
+	// subscribeFilter, when set, is asked before the room subscribes to a
+	// remote participant's audio. Tilbyderen fork, see SetSubscribeFilter.
+	subscribeFilter func(identity string) bool
 }
 
 type ParticipantConfig struct {
@@ -373,6 +377,10 @@ func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemotePa
 		log.Debugw("skipping non-audio track")
 		return
 	}
+	if allow := r.subscribeFilter; allow != nil && !allow(string(rp.Identity())) {
+		log.Infow("consult-mute: skipping subscription (warm-transfer isolation)")
+		return
+	}
 	log.Debugw("subscribing to a track")
 	r.stats.TrackSubscribes.Add(1)
 	if err := pub.SetSubscribed(true); err != nil {
@@ -380,6 +388,13 @@ func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemotePa
 		return
 	}
 	r.subscribed.Break()
+}
+
+// SetSubscribeFilter makes the room ask allow before it subscribes to a remote
+// participant's audio, now and for every track published later. Call it before
+// Connect. Tilbyderen fork: pkg/callext builds the warm-transfer guard on it.
+func (r *Room) SetSubscribeFilter(allow func(identity string) bool) {
+	r.subscribeFilter = allow
 }
 
 func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfig) error {

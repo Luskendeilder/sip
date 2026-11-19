@@ -32,6 +32,7 @@ import (
 	"github.com/livekit/psrpc/pkg/bus/redisbus"
 	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
 
+	"github.com/livekit/sip/pkg/callext"
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/eventsink"
@@ -107,15 +108,17 @@ func runService(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	// Tilbyderen fork: the call event stream (pkg/eventsink). nil when
-	// event_stream is not enabled, and then Wrap returns its argument.
+	// Tilbyderen fork: the call event stream (pkg/eventsink, nil when
+	// event_stream is not enabled) and the per-call behaviour (pkg/callext)
+	// plug into the call manager through its state handler and its room.
 	events := eventsink.New(conf.EventStream, conf.NodeID, log, func(ctx context.Context, args ...any) error {
 		return rc.Do(ctx, args...).Err()
 	})
 	defer events.Close()
+	ext := callext.New(conf, log, events)
 	manager, err := sip.NewCallManager("", conf, log, mon, sealer, func(projectID string, _ *rpc.SIPCallObservability, initial *livekit.SIPCallInfo) sip.StateHandler {
-		return events.Wrap(sip.NewRPCStateHandler(psrpcClient), initial)
-	})
+		return ext.StateHandler(sip.NewRPCStateHandler(psrpcClient), initial)
+	}, sip.WithGetRoom(ext.GetRoom))
 	if err != nil {
 		return err
 	}
