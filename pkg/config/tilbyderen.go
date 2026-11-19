@@ -24,6 +24,10 @@ type TilbyderenConfig struct {
 	// user (outbound). See pkg/sip/contact_user.go.
 	// Example: sip_contact_user: u004753218926
 	SIPContactUser string `yaml:"sip_contact_user"`
+
+	// EventStream writes every signaling event and every call record update
+	// of this node to a Redis stream. See pkg/eventsink. Off by default.
+	EventStream EventStreamConfig `yaml:"event_stream"`
 }
 
 // OutboundRegistration tells LK-SIP to keep an active SIP REGISTER
@@ -85,4 +89,21 @@ type OutboundRegistration struct {
 	// AuthUsername. Useful if the carrier expects a From distinct
 	// from the auth account (rare).
 	From string `yaml:"from,omitempty"`
+}
+
+// EventStreamConfig switches on the call event stream (pkg/eventsink): one
+// Redis stream that receives every SIP signaling event and every update of
+// the per-call record of this node.
+type EventStreamConfig struct {
+	// Enabled turns the stream on. Default false keeps upstream behaviour.
+	Enabled bool `yaml:"enabled"`
+	// Key is the Redis stream key. Default "sip:events".
+	Key string `yaml:"key"`
+	// MaxLen is the approximate number of entries kept (XADD MAXLEN ~).
+	// Default 200000; one call produces roughly 15 entries.
+	MaxLen int64 `yaml:"max_len"`
+	// AttributePrefix selects participant attributes to copy into every
+	// entry: those whose key starts with it (for example "tb."). Empty
+	// copies none.
+	AttributePrefix string `yaml:"attribute_prefix"`
 }

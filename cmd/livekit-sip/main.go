@@ -34,6 +34,7 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
+	"github.com/livekit/sip/pkg/eventsink"
 	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
@@ -106,8 +107,14 @@ func runService(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	manager, err := sip.NewCallManager("", conf, log, mon, sealer, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
-		return sip.NewRPCStateHandler(psrpcClient)
+	// Tilbyderen fork: the call event stream (pkg/eventsink). nil when
+	// event_stream is not enabled, and then Wrap returns its argument.
+	events := eventsink.New(conf.EventStream, conf.NodeID, log, func(ctx context.Context, args ...any) error {
+		return rc.Do(ctx, args...).Err()
+	})
+	defer events.Close()
+	manager, err := sip.NewCallManager("", conf, log, mon, sealer, func(projectID string, _ *rpc.SIPCallObservability, initial *livekit.SIPCallInfo) sip.StateHandler {
+		return events.Wrap(sip.NewRPCStateHandler(psrpcClient), initial)
 	})
 	if err != nil {
 		return err
