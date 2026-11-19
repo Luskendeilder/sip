@@ -162,6 +162,9 @@ type Config struct {
 		// InboundWaitACK forces SIP to wait for an ACK to 200 OK before proceeding with the call.
 		InboundWaitACK bool `yaml:"inbound_wait_ack"`
 	} `yaml:"experimental"`
+
+	// Tilbyderen fork: all fork-only keys, see tilbyderen.go.
+	TilbyderenConfig `yaml:",inline"`
 }
 
 func NewConfig(confString string) (*Config, error) {

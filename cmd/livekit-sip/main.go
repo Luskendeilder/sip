@@ -116,10 +116,20 @@ func runService(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	svc := service.NewService(conf, log, sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
+	// Tilbyderen fork: the registrar keeps the trunk REGISTER bindings alive
+	// (pkg/sip/registrar.go). It starts after the SIP client and closes before
+	// it, so its un-REGISTER can still be sent. nil without registrations.
+	var registrar *sip.Registrar
+	svc := service.NewService(conf, log, sipsrv, func() {
+		registrar.Close()
+		sipsrv.Stop()
+	}, sipsrv.ActiveCalls, psrpcClient, bus, mon)
 	sipsrv.SetHandler(svc)
 
 	if err = sipsrv.Start(); err != nil {
+		return err
+	}
+	if registrar, err = sipsrv.StartRegistrar(); err != nil {
 		return err
 	}
 
@@ -128,6 +138,10 @@ func runService(ctx context.Context, c *cli.Command) error {
 		case sig := <-stopChan:
 			log.Infow("exit requested, finishing all SIP then shutting down", "signal", sig)
 			svc.Stop(false)
+			// Tilbyderen fork: give up the trunk REGISTER bindings as the drain
+			// starts, so the carrier stops sending inbound calls to a node that is
+			// only waiting for its last calls to end.
+			registrar.Withdraw()
 		case sig := <-killChan:
 			log.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
 			svc.Stop(true)
