@@ -2147,6 +2147,7 @@ func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransa
 	legTr := legTransportFromReq(invite)
 	tr := callTransportFromReq(invite)
 	contact := cm.ContactURI(legTr)
+	contact.User = contactUser(cm.conf, toHdr.Address.User) // Tilbyderen fork, see contact_user.go
 	log := cm.log.WithValues(
 		"callID", toTag,
 		"sipCallID", sipCallID,

@@ -15,6 +15,15 @@ type TilbyderenConfig struct {
 	// OutboundRegistrations are SIP REGISTER bindings kept alive from startup,
 	// one per entry. See OutboundRegistration and pkg/sip/registrar.go.
 	OutboundRegistrations []OutboundRegistration `yaml:"outbound_registrations,omitempty"`
+
+	// SIPContactUser overrides the user part of the Contact URI we send in
+	// replies to inbound INVITEs and in outbound INVITEs. Upstream sends a
+	// Contact with no user part; Telavox's SBC silently drops in-dialog
+	// messages (the ACK for our 200 OK) for such a Contact. When this is
+	// empty the user part is the To user of the INVITE (inbound) or our From
+	// user (outbound). See pkg/sip/contact_user.go.
+	// Example: sip_contact_user: u004753218926
+	SIPContactUser string `yaml:"sip_contact_user"`
 }
 
 // OutboundRegistration tells LK-SIP to keep an active SIP REGISTER

@@ -109,6 +109,7 @@ func (cm *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config
 
 	tr := TransportFrom(sipConf.transport)
 	contact := cm.ContactURI(tr)
+	contact.User = contactUser(conf, fromUser(sipConf.from)) // Tilbyderen fork, see contact_user.go
 
 	now := time.Now()
 	call := &outboundCall{
